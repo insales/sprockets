@@ -91,7 +91,7 @@ module Sprockets
     def evaluate(context, locals, &block)
       @context = context
 
-      @result = ""
+      @result = "".encode! context.environment.default_external_encoding
       @has_written_body = false
 
       process_directives
