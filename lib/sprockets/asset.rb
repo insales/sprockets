@@ -30,13 +30,17 @@ module Sprockets
 
     attr_reader :logical_path, :pathname
     attr_reader :content_type, :mtime, :length, :digest
+    alias_method :bytesize, :length
 
     def initialize(environment, logical_path, pathname)
+      raise ArgumentError, "Asset logical path has no extension: #{logical_path}" if File.extname(logical_path) == ""
+
       @root         = environment.root
       @logical_path = logical_path.to_s
       @pathname     = Pathname.new(pathname)
       @content_type = environment.content_type_of(pathname)
-      @mtime        = environment.stat(pathname).mtime
+      # drop precision to 1 second, same pattern followed elsewhere
+      @mtime        = Time.at(environment.stat(pathname).mtime.to_i)
       @length       = environment.stat(pathname).size
       @digest       = environment.file_digest(pathname).hexdigest
     end
@@ -55,8 +59,7 @@ module Sprockets
       end
 
       if mtime = coder['mtime']
-        # Parse time string
-        @mtime = Time.parse(mtime)
+        @mtime = Time.at(mtime)
       end
 
       if length = coder['length']
@@ -71,7 +74,7 @@ module Sprockets
       coder['logical_path'] = logical_path
       coder['pathname']     = relativize_root_path(pathname).to_s
       coder['content_type'] = content_type
-      coder['mtime']        = mtime.iso8601
+      coder['mtime']        = mtime.to_i
       coder['length']       = length
       coder['digest']       = digest
     end
@@ -144,12 +147,12 @@ module Sprockets
         if options[:compress]
           # Run contents through `Zlib`
           gz = Zlib::GzipWriter.new(f, Zlib::BEST_COMPRESSION)
+          gz.mtime = mtime.to_i
           gz.write to_s
           gz.close
         else
           # Write out as is
           f.write to_s
-          f.close
         end
       end
 
@@ -233,7 +236,7 @@ module Sprockets
           return false
         end
 
-        # Compare dependency mime to the actual mtime. If the
+        # Compare dependency mtime to the actual mtime. If the
         # dependency mtime is newer than the actual mtime, the file
         # hasn't changed since we created this `Asset` instance.
         #
@@ -241,7 +244,11 @@ module Sprockets
         # stale. Many deployment environments may recopy or recheckout
         # assets on each deploy. In this case the mtime would be the
         # time of deploy rather than modified time.
-        if mtime >= stat.mtime
+        #
+        # Note: to_i is used in eql? and write_to we assume fidelity of 1 second
+        #  if people save files more frequently than 1 second sprockets may
+        #  not pick it up, by design
+        if mtime.to_i >= stat.mtime.to_i
           return true
         end
 

@@ -53,7 +53,7 @@ module Sprockets
     #     # => 'application'
     #
     def logical_path
-      @logical_path[/^([^.]+)/, 0]
+      @logical_path.chomp(File.extname(@logical_path))
     end
 
     # Returns content type of file
@@ -81,7 +81,11 @@ module Sprockets
       attributes = environment.attributes_for(pathname)
 
       if pathname.absolute?
-        pathname
+        if environment.stat(pathname)
+          pathname
+        else
+          raise FileNotFound, "couldn't find file '#{pathname}'"
+        end
 
       elsif content_type = options[:content_type]
         content_type = self.content_type if content_type == :self
@@ -101,7 +105,7 @@ module Sprockets
 
         raise FileNotFound, "couldn't find file '#{path}'"
       else
-        environment.resolve(path, :base_path => self.pathname.dirname, &block)
+        environment.resolve(path, {:base_path => self.pathname.dirname}.merge(options), &block)
       end
     end
 
@@ -215,6 +219,56 @@ module Sprockets
       asset  = environment.find_asset(path)
       base64 = Base64.encode64(asset.to_s).gsub(/\s+/, "")
       "data:#{asset.content_type};base64,#{Rack::Utils.escape(base64)}"
+    end
+
+    # Expands logical path to full url to asset.
+    #
+    # NOTE: This helper is currently not implemented and should be
+    # customized by the application. Though, in the future, some
+    # basics implemention may be provided with different methods that
+    # are required to be overridden.
+    def asset_path(path, options = {})
+      message = <<-EOS
+Custom asset_path helper is not implemented
+
+Extend your environment context with a custom method.
+
+    environment.context_class.class_eval do
+      def asset_path(path, options = {})
+      end
+    end
+      EOS
+      raise NotImplementedError, message
+    end
+
+    # Expand logical image asset path.
+    def image_path(path)
+      asset_path(path, :type => :image)
+    end
+
+    # Expand logical video asset path.
+    def video_path(path)
+      asset_path(path, :type => :video)
+    end
+
+    # Expand logical audio asset path.
+    def audio_path(path)
+      asset_path(path, :type => :audio)
+    end
+
+    # Expand logical font asset path.
+    def font_path(path)
+      asset_path(path, :type => :font)
+    end
+
+    # Expand logical javascript asset path.
+    def javascript_path(path)
+      asset_path(path, :type => :javascript)
+    end
+
+    # Expand logical stylesheet asset path.
+    def stylesheet_path(path)
+      asset_path(path, :type => :stylesheet)
     end
 
     private

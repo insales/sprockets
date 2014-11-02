@@ -1,17 +1,17 @@
 require 'sprockets/asset_attributes'
 require 'sprockets/bundled_asset'
 require 'sprockets/caching'
+require 'sprockets/errors'
 require 'sprockets/processed_asset'
-require 'sprockets/processing'
 require 'sprockets/server'
 require 'sprockets/static_asset'
-require 'sprockets/trail'
+require 'multi_json'
 require 'pathname'
 
 module Sprockets
   # `Base` class for `Environment` and `Index`.
   class Base
-    include Caching, Processing, Server, Trail
+    include Caching, Paths, Mime, Processing, Compressing, Engines, Server
 
     # Returns a `Digest` implementation class.
     #
@@ -98,6 +98,114 @@ module Sprockets
       @cache = cache
     end
 
+    def prepend_path(path)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    def append_path(path)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    def clear_paths
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    # Finds the expanded real path for a given logical path by
+    # searching the environment's paths.
+    #
+    #     resolve("application.js")
+    #     # => "/path/to/app/javascripts/application.js.coffee"
+    #
+    # A `FileNotFound` exception is raised if the file does not exist.
+    def resolve(logical_path, options = {})
+      # If a block is given, preform an iterable search
+      if block_given?
+        args = attributes_for(logical_path).search_paths + [options]
+        @trail.find(*args) do |path|
+          pathname = Pathname.new(path)
+          if %w( bower.json component.json ).include?(pathname.basename.to_s)
+            bower = json_decode(pathname.read)
+            case bower['main']
+            when String
+              yield pathname.dirname.join(bower['main'])
+            when Array
+              extname = File.extname(logical_path)
+              bower['main'].each do |fn|
+                if extname == "" || extname == File.extname(fn)
+                  yield pathname.dirname.join(fn)
+                end
+              end
+            end
+          else
+            yield pathname
+          end
+        end
+      else
+        resolve(logical_path, options) do |pathname|
+          return pathname
+        end
+        raise FileNotFound, "couldn't find file '#{logical_path}'"
+      end
+    end
+
+    # Register a new mime type.
+    def register_mime_type(mime_type, ext)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      @trail.append_extension(ext)
+      super
+    end
+
+    # Registers a new Engine `klass` for `ext`.
+    def register_engine(ext, klass)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      add_engine_to_trail(ext, klass)
+      super
+    end
+
+    def register_preprocessor(mime_type, klass, &block)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    def unregister_preprocessor(mime_type, klass)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    def register_postprocessor(mime_type, klass, &block)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    def unregister_postprocessor(mime_type, klass)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    def register_bundle_processor(mime_type, klass, &block)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
+    def unregister_bundle_processor(mime_type, klass)
+      # Overrides the global behavior to expire the index
+      expire_index!
+      super
+    end
+
     # Return an `Index`. Must be implemented by the subclass.
     def index
       raise NotImplementedError
@@ -113,14 +221,14 @@ module Sprockets
     #
     # Subclasses may cache this method.
     def entries(pathname)
-      trail.entries(pathname)
+      @trail.entries(pathname)
     end
 
     # Works like `File.stat`.
     #
     # Subclasses may cache this method.
     def stat(path)
-      trail.stat(path)
+      @trail.stat(path)
     end
 
     # Read and compute digest of filename.
@@ -161,6 +269,16 @@ module Sprockets
       else
         begin
           pathname = resolve(logical_path)
+
+          # If logical path is missing a mime type extension, append
+          # the absolute path extname so it has one.
+          #
+          # Ensures some consistency between finding "foo/bar" vs
+          # "foo/bar.js".
+          if File.extname(logical_path) == ""
+            expanded_logical_path = attributes_for(pathname).logical_path
+            logical_path += File.extname(expanded_logical_path)
+          end
         rescue FileNotFound
           return nil
         end
@@ -210,13 +328,20 @@ module Sprockets
       nil
     end
 
-    def each_logical_path(*args)
+    def each_logical_path(*args, &block)
       return to_enum(__method__, *args) unless block_given?
       filters = args.flatten
       files = {}
       each_file do |filename|
         if logical_path = logical_path_for_filename(filename, filters)
-          yield logical_path unless files[logical_path]
+          unless files[logical_path]
+            if block.arity == 2
+              yield logical_path, filename.to_s
+            else
+              yield logical_path
+            end
+          end
+
           files[logical_path] = true
         end
       end
@@ -275,14 +400,14 @@ module Sprockets
       def logical_path_for_filename(filename, filters)
         logical_path = attributes_for(filename).logical_path.to_s
 
-        if matches_filter(filters, logical_path)
+        if matches_filter(filters, logical_path, filename)
           return logical_path
         end
 
         # If filename is an index file, retest with alias
         if File.basename(logical_path)[/[^\.]+/, 0] == 'index'
           path = logical_path.sub(/\/index\./, '.')
-          if matches_filter(filters, path)
+          if matches_filter(filters, path, filename)
             return path
           end
         end
@@ -290,17 +415,32 @@ module Sprockets
         nil
       end
 
-      def matches_filter(filters, filename)
+      def matches_filter(filters, logical_path, filename)
         return true if filters.empty?
 
         filters.any? do |filter|
           if filter.is_a?(Regexp)
-            filter.match(filename)
+            filter.match(logical_path)
           elsif filter.respond_to?(:call)
-            filter.call(filename)
+            if filter.arity == 1
+              filter.call(logical_path)
+            else
+              filter.call(logical_path, filename.to_s)
+            end
           else
-            File.fnmatch(filter.to_s, filename)
+            File.fnmatch(filter.to_s, logical_path)
           end
+        end
+      end
+
+      # Feature detect newer MultiJson API
+      if MultiJson.respond_to?(:dump)
+        def json_decode(obj)
+          MultiJson.load(obj)
+        end
+      else
+        def json_decode(obj)
+          MultiJson.decode(obj)
         end
       end
   end

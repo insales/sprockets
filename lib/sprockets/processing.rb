@@ -7,16 +7,6 @@ module Sprockets
   # `Processing` is an internal mixin whose public methods are exposed on
   # the `Environment` and `Index` classes.
   module Processing
-    include Engines, Mime
-
-    # Register a new mime type.
-    def register_mime_type(mime_type, ext)
-      # Overrides the global behavior to expire the index
-      expire_index!
-      @trail.append_extension(ext)
-      super
-    end
-
     # Returns an `Array` of format extension `String`s.
     #
     #     format_extensions
@@ -24,14 +14,6 @@ module Sprockets
     #
     def format_extensions
       @trail.extensions - @engines.keys
-    end
-
-    # Registers a new Engine `klass` for `ext`.
-    def register_engine(ext, klass)
-      # Overrides the global behavior to expire the index
-      expire_index!
-      add_engine_to_trail(ext, klass)
-      super
     end
 
     # Deprecated alias for `preprocessors`.
@@ -83,13 +65,11 @@ module Sprockets
     #
     # A block can be passed for to create a shorthand processor.
     #
-    #     register_preprocessor :my_processor do |context, data|
+    #     register_preprocessor 'text/css', :my_processor do |context, data|
     #       data.gsub(...)
     #     end
     #
     def register_preprocessor(mime_type, klass, &block)
-      expire_index!
-
       if block_given?
         name  = klass.to_s
         klass = Class.new(Processor) do
@@ -107,13 +87,11 @@ module Sprockets
     #
     # A block can be passed for to create a shorthand processor.
     #
-    #     register_postprocessor :my_processor do |context, data|
+    #     register_postprocessor 'text/css', :my_processor do |context, data|
     #       data.gsub(...)
     #     end
     #
     def register_postprocessor(mime_type, klass, &block)
-      expire_index!
-
       if block_given?
         name  = klass.to_s
         klass = Class.new(Processor) do
@@ -135,8 +113,6 @@ module Sprockets
     #     unregister_preprocessor 'text/css', Sprockets::DirectiveProcessor
     #
     def unregister_preprocessor(mime_type, klass)
-      expire_index!
-
       if klass.is_a?(String) || klass.is_a?(Symbol)
         klass = @preprocessors[mime_type].detect { |cls|
           cls.respond_to?(:name) &&
@@ -152,8 +128,6 @@ module Sprockets
     #     unregister_postprocessor 'text/css', Sprockets::DirectiveProcessor
     #
     def unregister_postprocessor(mime_type, klass)
-      expire_index!
-
       if klass.is_a?(String) || klass.is_a?(Symbol)
         klass = @postprocessors[mime_type].detect { |cls|
           cls.respond_to?(:name) &&
@@ -192,8 +166,6 @@ module Sprockets
     #     end
     #
     def register_bundle_processor(mime_type, klass, &block)
-      expire_index!
-
       if block_given?
         name  = klass.to_s
         klass = Class.new(Processor) do
@@ -210,8 +182,6 @@ module Sprockets
     #     unregister_bundle_processor 'text/css', Sprockets::CharsetNormalizer
     #
     def unregister_bundle_processor(mime_type, klass)
-      expire_index!
-
       if klass.is_a?(String) || klass.is_a?(Symbol)
         klass = @bundle_processors[mime_type].detect { |cls|
           cls.respond_to?(:name) &&
@@ -220,50 +190,6 @@ module Sprockets
       end
 
       @bundle_processors[mime_type].delete(klass)
-    end
-
-    # Return CSS compressor or nil if none is set
-    def css_compressor
-      bundle_processors('text/css').detect { |klass|
-        klass.respond_to?(:name) &&
-          klass.name == 'Sprockets::Processor (css_compressor)'
-      }
-    end
-
-    # Assign a compressor to run on `text/css` assets.
-    #
-    # The compressor object must respond to `compress` or `compile`.
-    def css_compressor=(compressor)
-      expire_index!
-
-      unregister_bundle_processor 'text/css', :css_compressor
-      return unless compressor
-
-      register_bundle_processor 'text/css', :css_compressor do |context, data|
-        compressor.compress(data)
-      end
-    end
-
-    # Return JS compressor or nil if none is set
-    def js_compressor
-      bundle_processors('application/javascript').detect { |klass|
-        klass.respond_to?(:name) &&
-          klass.name == 'Sprockets::Processor (js_compressor)'
-      }
-    end
-
-    # Assign a compressor to run on `application/javascript` assets.
-    #
-    # The compressor object must respond to `compress` or `compile`.
-    def js_compressor=(compressor)
-      expire_index!
-
-      unregister_bundle_processor 'application/javascript', :js_compressor
-      return unless compressor
-
-      register_bundle_processor 'application/javascript', :js_compressor do |context, data|
-        compressor.compress(data)
-      end
     end
 
     private
